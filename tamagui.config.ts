@@ -1,8 +1,8 @@
-import { defaultConfig } from '@tamagui/config/v4'
-import { createTamagui } from 'tamagui'
+import { config } from "@tamagui/config/v3";
+import { createTamagui } from "tamagui";
 
-export const tamaguiConfig = createTamagui(defaultConfig)
+export const tamaguiConfig = createTamagui(config);
 
-export default tamaguiConfig
+export default tamaguiConfig;
 
-export type Conf = typeof import('./tamagui.config').default
+export type Conf = typeof tamaguiConfig;
