@@ -1,4 +1,3 @@
-import { Link } from "expo-router";
 import { Button, Text, YStack } from "tamagui";
 
 export default function Index() {
@@ -13,6 +12,14 @@ export default function Index() {
             <Text fontSize="$8" color="$color">
                 Home screen
             </Text>
+            <Button
+                borderWidth={1}
+                borderColor="$borderColor"
+                backgroundColor="transparent"
+                borderRadius="$4"
+            >
+                Hello
+            </Button>
         </YStack>
     );
 }
