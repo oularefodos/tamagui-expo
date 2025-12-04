@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { AppState } from 'react-native';
 
 // --- 1. SAFE STORAGE INITIALIZATION ---
+// Handles the "Expo Go" crash by falling back to Memory
 let storage: MMKV | null = null;
 try {
   // @ts-ignore: Suppress "MMKV is a type" error
@@ -12,10 +13,10 @@ try {
 }
 
 // --- 2. IN-MEMORY FALLBACK (For Expo Go) ---
-// This ensures the app works even if MMKV crashes.
 const memoryStore = new Map<string, string>();
 
-// --- 3. MMKV ADAPTER FOR SUPABASE ---
+// --- 3. MMKV ADAPTER FOR SUPABASE AUTH ---
+// Allows Supabase to persist sessions using MMKV
 const mmkvSupabaseAdapter = {
   getItem: (key: string) => {
     const val = storage?.getString(key);
@@ -31,7 +32,7 @@ const mmkvSupabaseAdapter = {
   },
 };
 
-// --- 4. SUPABASE SETUP ---
+// --- 4. SUPABASE CLIENT SETUP ---
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -46,6 +47,7 @@ export const supabase = (supabaseUrl && supabaseKey)
     }) 
   : null;
 
+// Keep the Auth Listener (Do not delete this!)
 if (supabase) {
   AppState.addEventListener('change', (state) => {
     if (state === 'active') supabase.auth.startAutoRefresh();
@@ -55,10 +57,12 @@ if (supabase) {
 
 export const isLive = !!supabase;
 
-// --- 5. HYBRID ADAPTER (Data Layer) ---
+// --- 5. HYBRID DATA ADAPTER (The "Magic" Part) ---
+// This mimics the Supabase API so your UI code works Offline & Online.
+
+// Internal helper to read/write raw JSON
 const localDb = {
   get: (key: string) => {
-    // Try MMKV first, then Memory
     const val = storage ? storage.getString(key) : memoryStore.get(key);
     return val ? JSON.parse(val) : [];
   },
@@ -71,33 +75,57 @@ const localDb = {
 
 export const db = {
   from: (table: string) => ({
+    // READ
     select: async () => {
       if (isLive) return supabase!.from(table).select('*');
       
-      console.log(`[MOCK] Reading '${table}' (Source: ${storage ? 'MMKV' : 'Memory'})`);
+      console.log(`[MOCK] Reading '${table}'`);
       return { data: localDb.get(table), error: null };
     },
+    
+    // CREATE
     insert: async (payload: any) => {
       if (isLive) return supabase!.from(table).insert(payload).select();
       
       const current = localDb.get(table);
+      // Generate a fake ID for the mock item
       const newItem = { id: Math.random().toString(36).substring(7), ...payload };
       localDb.set(table, [...current, newItem]);
       
-      console.log(`[MOCK] Saved to '${table}' (Source: ${storage ? 'MMKV' : 'Memory'})`);
+      console.log(`[MOCK] Saved to '${table}'`);
       return { data: [newItem], error: null };
     },
-    // Mock Update
+    
+    // UPDATE
     update: async (payload: any) => {
-       if (isLive) return supabase!.from(table).update(payload);
-       console.warn(`[MOCK] Update simulated for '${table}'`);
-       return { data: payload, error: null };
+      if (isLive) return supabase!.from(table).update(payload);
+      
+      // Mock update needs an .eq() chain, but for simple prototypes we just return success
+      // Real implementation would require a query builder state machine
+      console.warn(`[MOCK] Update simulated for '${table}'`);
+      return { 
+        eq: (col: string, val: any) => {
+           // Basic Mock Update Logic (Optional)
+           const current = localDb.get(table);
+           const updated = current.map((item: any) => item[col] === val ? { ...item, ...payload } : item);
+           localDb.set(table, updated);
+           return { data: payload, error: null };
+        }
+      };
     },
-    // Mock Delete
+    
+    // DELETE
     delete: async () => {
-       if (isLive) return supabase!.from(table).delete();
-       console.warn(`[MOCK] Delete simulated for '${table}'`);
-       return { data: null, error: null };
+      if (isLive) return supabase!.from(table).delete();
+      
+      return {
+        eq: (col: string, val: any) => {
+           const current = localDb.get(table);
+           const filtered = current.filter((item: any) => item[col] !== val);
+           localDb.set(table, filtered);
+           return { data: null, error: null };
+        }
+      };
     }
   })
 };
