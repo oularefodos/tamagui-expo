@@ -1,4 +1,4 @@
-import { Button, Text, YStack } from "tamagui";
+import { Text, YStack } from "tamagui";
 
 export default function Index() {
     return (
