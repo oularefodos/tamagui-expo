@@ -1,45 +1,22 @@
-import { MMKV } from 'react-native-mmkv';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import { AppState } from 'react-native';
 
-// --- 1. SAFE STORAGE INITIALIZATION ---
-// Handles the "Expo Go" crash by falling back to Memory
-let storage: MMKV | null = null;
-try {
-  // @ts-ignore: Suppress "MMKV is a type" error
-  storage = new MMKV({ id: 'app-db' });
-} catch (e) {
-  console.warn("⚠️ MMKV failed to load (Running in Expo Go?). Swapping to In-Memory Storage.");
-}
-
-// --- 2. IN-MEMORY FALLBACK (For Expo Go) ---
-const memoryStore = new Map<string, string>();
-
-// --- 3. MMKV ADAPTER FOR SUPABASE AUTH ---
-// Allows Supabase to persist sessions using MMKV
-const mmkvSupabaseAdapter = {
-  getItem: (key: string) => {
-    const val = storage?.getString(key);
-    return val ?? memoryStore.get(key) ?? null;
-  },
-  setItem: (key: string, value: string) => {
-    if (storage) storage.set(key, value);
-    else memoryStore.set(key, value);
-  },
-  removeItem: (key: string) => {
-    if (storage) (storage as any)?.delete(key);
-    else memoryStore.delete(key);
-  },
-};
-
-// --- 4. SUPABASE CLIENT SETUP ---
+// --- 1. SUPABASE CLIENT SETUP ---
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+
+// Simple adapter for Supabase Auth to work with AsyncStorage
+const asyncStorageAdapter = {
+  getItem: (key: string) => AsyncStorage.getItem(key),
+  setItem: (key: string, value: string) => AsyncStorage.setItem(key, value),
+  removeItem: (key: string) => AsyncStorage.removeItem(key),
+};
 
 export const supabase = (supabaseUrl && supabaseKey) 
   ? createClient(supabaseUrl, supabaseKey, {
       auth: {
-        storage: mmkvSupabaseAdapter,
+        storage: asyncStorageAdapter,
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false,
@@ -47,7 +24,7 @@ export const supabase = (supabaseUrl && supabaseKey)
     }) 
   : null;
 
-// Keep the Auth Listener (Do not delete this!)
+// Auth Listener
 if (supabase) {
   AppState.addEventListener('change', (state) => {
     if (state === 'active') supabase.auth.startAutoRefresh();
@@ -57,19 +34,25 @@ if (supabase) {
 
 export const isLive = !!supabase;
 
-// --- 5. HYBRID DATA ADAPTER (The "Magic" Part) ---
-// This mimics the Supabase API so your UI code works Offline & Online.
+// --- 2. HYBRID DATA ADAPTER (AsyncStorage Version) ---
+// works Offline, Online, AND persists in Expo Go.
 
-// Internal helper to read/write raw JSON
+// Helper to read/write JSON to AsyncStorage
 const localDb = {
-  get: (key: string) => {
-    const val = storage ? storage.getString(key) : memoryStore.get(key);
-    return val ? JSON.parse(val) : [];
+  get: async (key: string) => {
+    try {
+      const val = await AsyncStorage.getItem(key);
+      return val ? JSON.parse(val) : [];
+    } catch (e) {
+      return [];
+    }
   },
-  set: (key: string, value: any) => {
-    const str = JSON.stringify(value);
-    if (storage) storage.set(key, str);
-    else memoryStore.set(key, str);
+  set: async (key: string, value: any) => {
+    try {
+      await AsyncStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      console.error("Save failed", e);
+    }
   }
 };
 
@@ -80,49 +63,50 @@ export const db = {
       if (isLive) return supabase!.from(table).select('*');
       
       console.log(`[MOCK] Reading '${table}'`);
-      return { data: localDb.get(table), error: null };
+      const data = await localDb.get(table);
+      return { data, error: null };
     },
     
     // CREATE
     insert: async (payload: any) => {
       if (isLive) return supabase!.from(table).insert(payload).select();
       
-      const current = localDb.get(table);
-      // Generate a fake ID for the mock item
+      const current = await localDb.get(table);
       const newItem = { id: Math.random().toString(36).substring(7), ...payload };
-      localDb.set(table, [...current, newItem]);
+      await localDb.set(table, [...current, newItem]);
       
       console.log(`[MOCK] Saved to '${table}'`);
+      // Return data in an array to match Supabase
       return { data: [newItem], error: null };
     },
     
     // UPDATE
-    update: async (payload: any) => {
+    // We return an object with .eq() immediately (Synchronously)
+    update: (payload: any) => {
       if (isLive) return supabase!.from(table).update(payload);
       
-      // Mock update needs an .eq() chain, but for simple prototypes we just return success
-      // Real implementation would require a query builder state machine
       console.warn(`[MOCK] Update simulated for '${table}'`);
+      
       return { 
-        eq: (col: string, val: any) => {
-           // Basic Mock Update Logic (Optional)
-           const current = localDb.get(table);
+        eq: async (col: string, val: any) => {
+           const current = await localDb.get(table);
            const updated = current.map((item: any) => item[col] === val ? { ...item, ...payload } : item);
-           localDb.set(table, updated);
+           await localDb.set(table, updated);
            return { data: payload, error: null };
         }
       };
     },
     
     // DELETE
-    delete: async () => {
+    // We return an object with .eq() immediately (Synchronously)
+    delete: () => {
       if (isLive) return supabase!.from(table).delete();
       
       return {
-        eq: (col: string, val: any) => {
-           const current = localDb.get(table);
+        eq: async (col: string, val: any) => {
+           const current = await localDb.get(table);
            const filtered = current.filter((item: any) => item[col] !== val);
-           localDb.set(table, filtered);
+           await localDb.set(table, filtered);
            return { data: null, error: null };
         }
       };
