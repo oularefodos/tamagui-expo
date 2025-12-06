@@ -1,24 +1,22 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system';
-import {
-  getInfoAsync,
-  makeDirectoryAsync,
-  readAsStringAsync,
-  copyAsync
-} from 'expo-file-system/legacy';
 import { decode } from 'base64-arraybuffer';
 import { supabase, isLive } from './db';
 
-// 1. SAFE DIRECTORY ACCESS
-const rootDir = (FileSystem as any).documentDirectory ?? (FileSystem as any).cacheDirectory ?? '';
+// --- 1. SAFE DIRECTORY ACCESS ---
+// We cast FileSystem to 'any' to bypass the SDK 54 type definition bug
+// where documentDirectory is missing from the types but exists at runtime.
+const FS = FileSystem as any; 
+const rootDir = FS.documentDirectory ?? FS.cacheDirectory ?? '';
 const MOCK_BUCKET_DIR = rootDir + 'mock-bucket/';
 
 // Ensure mock directory exists (Skip on Web)
 async function ensureDir() {
   if (Platform.OS === 'web' || !rootDir) return;
-  const dir = await getInfoAsync(MOCK_BUCKET_DIR);
+  
+  const dir = await FileSystem.getInfoAsync(MOCK_BUCKET_DIR);
   if (!dir.exists) {
-    await makeDirectoryAsync(MOCK_BUCKET_DIR, { intermediates: true });
+    await FileSystem.makeDirectoryAsync(MOCK_BUCKET_DIR, { intermediates: true });
   }
 }
 
@@ -27,8 +25,13 @@ export const fileStorage = {
     try {
       // 1. LIVE MODE (Supabase) - Works on Web & Native
       if (isLive) {
-        const base64 = await readAsStringAsync(uri, { encoding: 'base64' });
+        // Read file as Base64 string
+        // We use the raw string 'base64' to avoid 'EncodingType' errors
+        const base64 = await FileSystem.readAsStringAsync(uri, { 
+          encoding: 'base64' 
+        });
         
+        // Supabase expects an ArrayBuffer, so we decode the Base64
         const { data, error } = await supabase!.storage
           .from(bucket)
           .upload(path, decode(base64), {
@@ -47,17 +50,15 @@ export const fileStorage = {
       // --- WEB FIX: Browsers can't save to disk ---
       if (Platform.OS === 'web') {
         console.log(`[MOCK STORAGE] Web detected. Passing through blob URI: ${uri}`);
-        // On web, the picker gives us a blob URL (blob:http://...) which works fine 
-        // for displaying immediately. We just return that.
         return { path: uri, error: null };
       }
 
       // --- NATIVE FIX: Save to Documents Folder ---
       await ensureDir();
-      const fileName = path.split('/').pop() ?? `file-${Date.now()}.jpg`;
+      const fileName = path.split('/').pop() || `file-${Date.now()}.jpg`;
       const destination = MOCK_BUCKET_DIR + fileName;
 
-      await copyAsync({ from: uri, to: destination });
+      await FileSystem.copyAsync({ from: uri, to: destination });
 
       console.log(`[MOCK STORAGE] Saved to: ${destination}`);
       return { path: destination, error: null };
